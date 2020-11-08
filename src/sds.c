@@ -41,6 +41,9 @@
 
 const char *SDS_NOINIT = "SDS_NOINIT";
 
+/*
+ * 根据sdshdr的类型返回该类型对应的结构体大小
+ */
 static inline int sdsHdrSize(char type) {
     switch(type&SDS_TYPE_MASK) {
         case SDS_TYPE_5:
@@ -57,6 +60,13 @@ static inline int sdsHdrSize(char type) {
     return 0;
 }
 
+/*
+ * 根据字符长度决定使用sdshdr的类型
+ * 
+ *  编译系统    int   LONG_MAX(long int)  LLONG_MAX(long long int)
+ *    32位      4B          4B                   8B
+ *    64位      4B          8B                   8B
+ */
 static inline char sdsReqType(size_t string_size) {
     if (string_size < 1<<5)
         return SDS_TYPE_5;
@@ -65,6 +75,7 @@ static inline char sdsReqType(size_t string_size) {
     if (string_size < 1<<16)
         return SDS_TYPE_16;
 #if (LONG_MAX == LLONG_MAX)
+    // 64位编译系统中，注意下面的是1LL
     if (string_size < 1ll<<32)
         return SDS_TYPE_32;
     return SDS_TYPE_64;
@@ -85,25 +96,36 @@ static inline char sdsReqType(size_t string_size) {
  *
  * You can print the string with printf() as there is an implicit \0 at the
  * end of the string. However the string is binary safe and can contain
- * \0 characters in the middle, as the length is stored in the sds header. */
+ * \0 characters in the middle, as the length is stored in the sds header. 
+ * 
+ * 生成新sds的函数，根据init指针和initlen参数来初始化sds的内容，根据init是否是SDS_NOINIT来设置是否需要* 使用init的内容初始化sds，如果是SDS_NOINIT，那么默认会将sds置为一串为未知的字符串，如果init为NULL。
+ * 那么默认会将sds置为一个空字符串，并且sdsnewlen在为sds向系统申请一个新的空间的时候，
+ * 新空间的长度是hdrlen+initlen+1，注意这里的+1，这多出来的一个字节，其实是放\0的，
+ * 这样sds就可以使用C自带标准库(strlen,strtoll之类的函数)来操作sds中buf的内容
+ */
 sds sdsnewlen(const void *init, size_t initlen) {
     void *sh;
     sds s;
+    // 根据initlen来获取合适的字符串长度
     char type = sdsReqType(initlen);
     /* Empty strings are usually created in order to append. Use type 8
      * since type 5 is not good at this. */
     if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
+    // 根据sds类型来获取该类型对应的结构体大小
     int hdrlen = sdsHdrSize(type);
     unsigned char *fp; /* flags pointer. */
 
+    // 多出的1是为了给buf多加一个字节的空间放'\0'
     sh = s_malloc(hdrlen+initlen+1);
     if (sh == NULL) return NULL;
+    // 根据init是否等于"SDS_NOINIT"来决定是否初始化
     if (init==SDS_NOINIT)
         init = NULL;
     else if (!init)
         memset(sh, 0, hdrlen+initlen+1);
     s = (char*)sh+hdrlen;
     fp = ((unsigned char*)s)-1;
+    // 根据sds类型来初始化sds的内容
     switch(type) {
         case SDS_TYPE_5: {
             *fp = type | (initlen << SDS_TYPE_BITS);
@@ -200,7 +222,16 @@ void sdsclear(sds s) {
  * bytes after the end of the string, plus one more byte for nul term.
  *
  * Note: this does not change the *length* of the sds string as returned
- * by sdslen(), but only the free buffer space we have. */
+ * by sdslen(), but only the free buffer space we have. 
+ * 
+ * 扩大sds空间，但是感觉上还是想让sds中available空间的大小能够容纳addlen大小的字符串，并不是改变了sds中* buf的长度，而是改变了sds中available空间的大小，如果当前available空间的大小大于addlen的大小，
+ * 那么便不作修改，如果available空间的大小小鱼addlen的大小，那么就会重新分配sds中alloc的大小，
+ * newlen并不是无脑直接让alloc加上addlen，而且使用sds的长度加上addlen的长度作为newlen，
+ * 但是经常重新分配内存会对效率有所影响，但是为了防止重新分配内存对效率的影响而让newlen无脑翻倍的话，
+ * 又会对内存造成影响，造成内存占用过高，但是很大一部分内存并没有使用，所以取得了一个折中的办法，
+ * 就是在newlen小于SDS_MAX_PREALLOC(1M)，对newlen进行翻倍，在newlen大于SDS_MAX_PREALLOC的情况下，
+ * 让newlen加上SDS_MAX_PREALLOC。
+ */
 sds sdsMakeRoomFor(sds s, size_t addlen) {
     void *sh, *newsh;
     size_t avail = sdsavail(s);
@@ -251,7 +282,10 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
  * will require a reallocation.
  *
  * After the call, the passed sds string is no longer valid and all the
- * references must be substituted with the new pointer returned by the call. */
+ * references must be substituted with the new pointer returned by the call. 
+ * 
+ * 对sds中多余的空间进行释放，例如以前是一个sdshdr64的sds，在redis运行过程中，buf的内容被修改了，变短了，那么多出来的内容就需要释放掉，还给系统，并且，如果修改得比较多，现在一个sdshdr16的sds就能容纳下，那么当前sds的type还会被修改，因为不同的sds类型占用的空间也是不一样的，并且杀鸡焉用宰牛刀
+ */
 sds sdsRemoveFreeSpace(sds s) {
     void *sh, *newsh;
     char type, oldtype = s[-1] & SDS_TYPE_MASK;

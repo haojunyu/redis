@@ -33,6 +33,9 @@
 #ifndef __SDS_H
 #define __SDS_H
 
+/*
+ * SDS最大预分配长度
+ */
 #define SDS_MAX_PREALLOC (1024*1024)
 extern const char *SDS_NOINIT;
 
@@ -40,18 +43,40 @@ extern const char *SDS_NOINIT;
 #include <stdarg.h>
 #include <stdint.h>
 
+/*
+ * 类型别名，用于指向 sdshdr 的 buf 属性
+ */
 typedef char *sds;
+
+/*
+ * 相比3.0，保存字符串对象的结构sdshdr有好几个类型：
+ * sdshdr5（不使用），sdshdr8，sdshdr16，sdshdr32，sdshdr64
+ * 
+ * sdshdr是 sds header 的缩写
+ * 
+ * __attribute__ ((__packed__)) ，这一段代码的作用是取消编译阶段的内存优化对齐功能。
+ * struct aa {char a; int b;}; sizeof(aa) == 8
+ * struct __attribute__ ((packed)) aa {char a; int b;}; sizeof(aa) == 5;
+ * 
+ * lsb是 least significant bit 的简写，也叫低阶位
+ * msb是 most significant bit 的简写，也叫高阶位
+ */
 
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
  * However is here to document the layout of type 5 SDS strings. */
 struct __attribute__ ((__packed__)) sdshdr5 {
+    // 3个低阶位表示类型，5个高阶位表示字符长度
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr8 {
+    // 已使用的空间长度
     uint8_t len; /* used */
+    // 申请的空间大小（包括头部和结束符\0）
     uint8_t alloc; /* excluding the header and null terminator */
+    // 3个低阶位表示类型
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    // 数据空间，sds指向的位置
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr16 {
@@ -73,6 +98,9 @@ struct __attribute__ ((__packed__)) sdshdr64 {
     char buf[];
 };
 
+/*
+ * SDS类型的定义，只用了3个低阶位
+ */
 #define SDS_TYPE_5  0
 #define SDS_TYPE_8  1
 #define SDS_TYPE_16 2
@@ -80,11 +108,27 @@ struct __attribute__ ((__packed__)) sdshdr64 {
 #define SDS_TYPE_64 4
 #define SDS_TYPE_MASK 7
 #define SDS_TYPE_BITS 3
+/*
+ * ##是宏定义，用于在预编译期粘结两个符号
+ * SDS_HDR_VAR(8,s) 通过指向buf的sds变量s得到sdshdr8的结构体指针
+ * SDS_HDR(8,s) 通过指向buf的sds变量s得到sdshdr8的结构体指针地址
+ */
 #define SDS_HDR_VAR(T,s) struct sdshdr##T *sh = (void*)((s)-(sizeof(struct sdshdr##T)));
 #define SDS_HDR(T,s) ((struct sdshdr##T *)((s)-(sizeof(struct sdshdr##T))))
+// sdshdr5 从flag的5个高阶位中获取字符串的长度
 #define SDS_TYPE_5_LEN(f) ((f)>>SDS_TYPE_BITS)
 
+/*
+ * 返回 sds 实际保存的字符串的长度`O(1)`
+ * 
+ * static的主要作用是为了隐藏，让不同的文件中可以定义同名的函数和变量（和java等完全相反）
+ * 对于变量还可以持久化和初始化为0（存储在静态存储区）
+ * 
+ * 使用inline来修饰这些函数是因为这些函数会频繁使用，避免不断有函数入栈导致栈内存空间不够。
+ * 前提是函数调用的时间开销远比函数体内代码执行的时间要小。一般放在头文件中。
+ */
 static inline size_t sdslen(const sds s) {
+    // s[-1] 因为flags占一个字符，且紧靠buf变量，通过buf变量（s是指向buf位置）减1得到flags
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
         case SDS_TYPE_5:
@@ -101,6 +145,9 @@ static inline size_t sdslen(const sds s) {
     return 0;
 }
 
+/*
+ * 返回 sds 可用空间的长度`O(1)`
+ */
 static inline size_t sdsavail(const sds s) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
@@ -127,6 +174,9 @@ static inline size_t sdsavail(const sds s) {
     return 0;
 }
 
+/*
+ * 设置sds的长度`O(1)`
+ */
 static inline void sdssetlen(sds s, size_t newlen) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
@@ -151,6 +201,9 @@ static inline void sdssetlen(sds s, size_t newlen) {
     }
 }
 
+/*
+ * 增加sds的长度`O(1)`
+ */
 static inline void sdsinclen(sds s, size_t inc) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
@@ -176,7 +229,11 @@ static inline void sdsinclen(sds s, size_t inc) {
     }
 }
 
-/* sdsalloc() = sdsavail() + sdslen() */
+/*
+ * sdsalloc() = sdsavail() + sdslen()
+ * 
+ * 获取sds已分配的空间大小`O(1)`
+ */
 static inline size_t sdsalloc(const sds s) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
@@ -194,6 +251,9 @@ static inline size_t sdsalloc(const sds s) {
     return 0;
 }
 
+/*
+ * 设置sds可分配的空间大小`O(1)`
+ */
 static inline void sdssetalloc(sds s, size_t newlen) {
     unsigned char flags = s[-1];
     switch(flags&SDS_TYPE_MASK) {
@@ -214,6 +274,7 @@ static inline void sdssetalloc(sds s, size_t newlen) {
             break;
     }
 }
+
 
 sds sdsnewlen(const void *init, size_t initlen);
 sds sdsnew(const char *init);
