@@ -36,7 +36,7 @@ int scan_strings(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
         .nkeys = 0,
     };
 
-    RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+    RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_LEN);
 
     RedisModuleScanCursor* cursor = RedisModule_ScanCursorCreate();
     while(RedisModule_Scan(ctx, cursor, scan_strings_callback, &pd));
@@ -55,11 +55,23 @@ void scan_key_callback(RedisModuleKey *key, RedisModuleString* field, RedisModul
     REDISMODULE_NOT_USED(key);
     scan_key_pd* pd = privdata;
     RedisModule_ReplyWithArray(pd->ctx, 2);
-    RedisModule_ReplyWithString(pd->ctx, field);
-    if (value)
-        RedisModule_ReplyWithString(pd->ctx, value);
-    else
+    size_t fieldCStrLen;
+
+    // The implementation of RedisModuleString is robj with lots of encodings.
+    // We want to make sure the robj that passes to this callback in
+    // String encoded, this is why we use RedisModule_StringPtrLen and
+    // RedisModule_ReplyWithStringBuffer instead of directly use
+    // RedisModule_ReplyWithString.
+    const char* fieldCStr = RedisModule_StringPtrLen(field, &fieldCStrLen);
+    RedisModule_ReplyWithStringBuffer(pd->ctx, fieldCStr, fieldCStrLen);
+    if(value){
+        size_t valueCStrLen;
+        const char* valueCStr = RedisModule_StringPtrLen(value, &valueCStrLen);
+        RedisModule_ReplyWithStringBuffer(pd->ctx, valueCStr, valueCStrLen);
+    } else {
         RedisModule_ReplyWithNull(pd->ctx);
+    }
+
     pd->nreplies++;
 }
 
@@ -91,6 +103,52 @@ int scan_key(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     return REDISMODULE_OK;
 }
 
+typedef struct {
+    RedisModuleCtx *ctx;
+    RedisModuleString *first;
+    size_t count;
+} scan_key_delete_pd;
+
+void scan_key_delete_callback(RedisModuleKey *key, RedisModuleString *field,
+                              RedisModuleString *value, void *privdata)
+{
+    REDISMODULE_NOT_USED(value);
+    scan_key_delete_pd *pd = privdata;
+
+    RedisModule_ReplyWithString(pd->ctx, field);
+    pd->count++;
+    if (pd->count == 1) {
+        pd->first = field;
+        RedisModule_RetainString(pd->ctx, field);
+    } else if (pd->count == 2) {
+        int deleted;
+        RedisModule_ZsetRem(key, pd->first, &deleted);
+        RedisModule_FreeString(pd->ctx, pd->first);
+        pd->first = NULL;
+    }
+}
+
+/* Scan a sorted set while deleting the first member from the second callback.
+ * This exercises the documented guarantee that deleting a returned element
+ * does not hide elements that remain present throughout the scan. */
+int scan_key_delete(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+    if (argc != 2) return RedisModule_WrongArity(ctx);
+
+    RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ | REDISMODULE_WRITE);
+    if (!key) return RedisModule_ReplyWithError(ctx, "not found");
+
+    scan_key_delete_pd pd = {.ctx = ctx};
+    RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+    RedisModuleScanCursor *cursor = RedisModule_ScanCursorCreate();
+    while (RedisModule_ScanKey(key, cursor, scan_key_delete_callback, &pd));
+    RedisModule_ScanCursorDestroy(cursor);
+    if (pd.first) RedisModule_FreeString(ctx, pd.first);
+    RedisModule_ReplySetArrayLength(ctx, pd.count);
+    RedisModule_CloseKey(key);
+    return REDISMODULE_OK;
+}
+
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
@@ -103,7 +161,8 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     if (RedisModule_CreateCommand(ctx, "scan.scan_key", scan_key, "", 0, 0, 0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
+    if (RedisModule_CreateCommand(ctx, "scan.scan_key_delete", scan_key_delete, "", 0, 0, 0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+
     return REDISMODULE_OK;
 }
-
-

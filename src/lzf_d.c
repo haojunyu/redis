@@ -36,6 +36,12 @@
 
 #include "lzfP.h"
 
+/* Redis decompresses with the faster lzf_decompress2() (see lzf_d_2.c). This
+ * original upstream decoder is no longer called in production; it is compiled
+ * only in test builds, where the lzf fuzz test uses it as the correctness
+ * oracle for lzf_decompress2(). */
+#ifdef REDIS_TEST
+
 #if AVOID_ERRNO
 # define SET_ERRNO(n)
 #else
@@ -52,22 +58,23 @@
 #endif
 #endif
 
-#if defined(__GNUC__) && __GNUC__ >= 5
+#if defined(__GNUC__) && __GNUC__ >= 7
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 #endif
-unsigned int
-lzf_decompress (const void *const in_data,  unsigned int in_len,
-                void             *out_data, unsigned int out_len)
+size_t
+lzf_decompress (const void *const in_data,  size_t in_len,
+                void             *out_data, size_t out_len)
 {
   u8 const *ip = (const u8 *)in_data;
   u8       *op = (u8 *)out_data;
   u8 const *const in_end  = ip + in_len;
   u8       *const out_end = op + out_len;
 
-  do
+  while (ip < in_end)
     {
-      unsigned int ctrl = *ip++;
+      unsigned int ctrl;
+      ctrl = *ip++;
 
       if (ctrl < (1 << 5)) /* literal run */
         {
@@ -182,10 +189,11 @@ lzf_decompress (const void *const in_data,  unsigned int in_len,
 #endif
         }
     }
-  while (ip < in_end);
 
   return op - (u8 *)out_data;
 }
 #if defined(__GNUC__) && __GNUC__ >= 5
 #pragma GCC diagnostic pop
 #endif
+
+#endif /* REDIS_TEST */

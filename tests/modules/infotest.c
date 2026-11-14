@@ -3,9 +3,11 @@
 #include <string.h>
 
 void InfoFunc(RedisModuleInfoCtx *ctx, int for_crash_report) {
+    static int info_func_calls = 0;
     RedisModule_InfoAddSection(ctx, "");
     RedisModule_InfoAddFieldLongLong(ctx, "global", -2);
     RedisModule_InfoAddFieldULongLong(ctx, "uglobal", (unsigned long long)-2);
+    RedisModule_InfoAddFieldLongLong(ctx, "info_calls", ++info_func_calls);
 
     RedisModule_InfoAddSection(ctx, "Spanish");
     RedisModule_InfoAddFieldCString(ctx, "uno", "one");
@@ -21,10 +23,15 @@ void InfoFunc(RedisModuleInfoCtx *ctx, int for_crash_report) {
     RedisModule_InfoAddFieldLongLong(ctx, "expires", 1);
     RedisModule_InfoEndDictField(ctx);
 
+    RedisModule_InfoAddSection(ctx, "unsafe");
+    RedisModule_InfoBeginDictField(ctx, "unsafe:field");
+    RedisModule_InfoAddFieldLongLong(ctx, "value", 1);
+    RedisModule_InfoEndDictField(ctx);
+
     if (for_crash_report) {
         RedisModule_InfoAddSection(ctx, "Klingon");
-        RedisModule_InfoAddFieldCString(ctx, "one", "wa’");
-        RedisModule_InfoAddFieldCString(ctx, "two", "cha’");
+        RedisModule_InfoAddFieldCString(ctx, "one", "wa'");
+        RedisModule_InfoAddFieldCString(ctx, "two", "cha'");
         RedisModule_InfoAddFieldCString(ctx, "three", "wej");
     }
 
